@@ -15,7 +15,7 @@
       display: flex;
       justify-content: center;
       align-items: center;
-      height: 100vh;
+      height: 60vh;
       background-color: #f5f7fa;
       color: #333;
     }
@@ -363,14 +363,31 @@
       xhr.send(JSON.stringify({ newPassword }));
     });
     const qrCodeContainer = document.getElementById('qrcode');
-    const url = window.location.href;
-    new QRCode(qrCodeContainer, {
-      text: url,
-      width: 75,
-      height: 75,
-      colorDark: "#015175",
-      colorLight: "#ffffff"
-    });
+    fetch('/server-ip')
+      .then(res => res.json())
+      .then(data => {
+         const serverIp = data.serverIp;
+         const url = `http://${serverIp}:${location.port}`;
+         new QRCode(qrCodeContainer, {
+           text: url,
+           width: 75,
+           height: 75,
+           colorDark: "#015175",
+           colorLight: "#ffffff"
+         });
+      })
+      .catch(err => {
+         console.error("Failed to get server IP", err);
+         // Fallback to location.hostname
+         const url = `http://${location.hostname}:${location.port}`;
+         new QRCode(qrCodeContainer, {
+           text: url,
+           width: 75,
+           height: 75,
+           colorDark: "#015175",
+           colorLight: "#ffffff"
+         });
+      });
   </script>
 </body>
 </html>

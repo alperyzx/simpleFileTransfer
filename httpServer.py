@@ -13,6 +13,7 @@ import urllib.parse
 import time
 import uuid
 import http.cookies
+import socket
 
 login_attempts = {}  # Format: { client_ip: { "count": int, "lock_until": timestamp (optional) } }
 PASSWORD = "1234"  # Change this to your preferred password
@@ -20,6 +21,19 @@ SESSION_TIMEOUT = 1800  # Session timeout in seconds (30 minutes)
 sessions = {}  # Format: {session_id: {'created_at': timestamp}}
 
 class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+    def get_server_ip(self):
+        # New implementation to obtain the real outbound IP:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            # Connect to an external server, doesn't actually send data.
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+        except Exception:
+            ip = "127.0.0.1"
+        finally:
+            s.close()
+        return ip
+
     def is_authenticated(self):
         # Check for session cookie
         if 'Cookie' in self.headers:
@@ -40,6 +54,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return session_id
 
     def serve_login_page(self, error_message=""):
+        server_ip = self.get_server_ip()
         login_page = f"""
         <!DOCTYPE html>
         <html>
@@ -52,7 +67,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     display: flex;
                     justify-content: center;
                     align-items: center;
-                    height: 100vh;
+                    height: 60vh;
                     background-color: #f5f7fa;
                 }}
                 .container {{
@@ -94,6 +109,9 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     <input type="submit" value="Login">
                 </form>
             </div>
+            <script>
+                const serverIp = "{server_ip}";
+            </script>
         </body>
         </html>
         """
@@ -103,6 +121,18 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.wfile.write(login_page.encode("utf-8"))
 
     def do_GET(self):
+        if self.path == "/server-ip":
+            if not self.is_authenticated():
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return
+            server_ip = self.get_server_ip()
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps({"serverIp": server_ip}).encode("utf-8"))
+            return
         if self.path == "/login":
             return self.serve_login_page()
         if not self.is_authenticated():
