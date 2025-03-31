@@ -11,14 +11,25 @@ import time
 import uuid
 import http.cookies
 import socket
+import logging
+import shutil
+import tempfile
 
 login_attempts = {}  # Format: { client_ip: { "count": int, "lock_until": timestamp (optional) } }
 PASSWORD = "1234"  # Change this to your preferred password
 SESSION_TIMEOUT = 1800  # Session timeout in seconds (30 minutes)
 sessions = {}  # Format: {session_id: {'created_at': timestamp}}
 UPLOAD_DIR = "uploaded"  # Default upload directory
+MAX_FILE_SIZE = 1024 * 1024 * 700  # 700 MB file size limit
+ALLOWED_EXTENSIONS = None  # Set to a list to restrict file types, None for no restriction
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+    # Set a longer timeout (5 minutes)
+    timeout = 300
+    
     @staticmethod
     def get_server_ip():
         # New implementation to obtain the real outbound IP:
@@ -126,6 +137,73 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return client_ip == "127.0.0.1" or client_ip == "::1" or client_ip == self.get_server_ip()
 
     def do_GET(self):
+        if self.path.startswith("/download/"):
+            if not self.is_authenticated():
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return
+                
+            # Extract the filename from the path
+            filename = self.path[10:]  # Remove the '/download/' prefix
+            filename = urllib.parse.unquote(filename)
+            
+            # Prevent directory traversal attacks
+            if os.path.isabs(filename) or '..' in filename:
+                self.send_error(HTTPStatus.FORBIDDEN, "Access denied")
+                return
+                
+            # Create the full path using the current UPLOAD_DIR
+            file_path = os.path.join(UPLOAD_DIR, filename)
+            
+            # Check if the file exists
+            if not os.path.isfile(file_path):
+                self.send_error(HTTPStatus.NOT_FOUND, "File not found")
+                return
+                
+            # Serve the file
+            try:
+                with open(file_path, 'rb') as file:
+                    self.send_response(HTTPStatus.OK)
+                    
+                    # Determine content type (basic implementation)
+                    content_type = "application/octet-stream"  # Default
+                    if filename.endswith('.html'): content_type = 'text/html'
+                    elif filename.endswith('.txt'): content_type = 'text/plain'
+                    elif filename.endswith('.jpg') or filename.endswith('.jpeg'): content_type = 'image/jpeg'
+                    elif filename.endswith('.png'): content_type = 'image/png'
+                    elif filename.endswith('.gif'): content_type = 'image/gif'
+                    elif filename.endswith('.pdf'): content_type = 'application/pdf'
+                    
+                    self.send_header("Content-type", content_type)
+                    
+                    # Properly encode filename for Content-Disposition header
+                    # Use both filename and filename* parameters for compatibility
+                    ascii_filename = filename.encode('ascii', 'replace').decode('ascii')
+                    utf8_filename = filename.encode('utf-8')
+                    
+                    # Percent-encode the UTF-8 bytes for filename*
+                    encoded_filename = ''
+                    for byte in utf8_filename:
+                        encoded_filename += f'%{byte:02X}'
+                    
+                    content_disp = f'attachment; filename="{ascii_filename}"; filename*=UTF-8\'\'{encoded_filename}'
+                    self.send_header("Content-Disposition", content_disp)
+                    
+                    # Get file size for Content-Length header
+                    fs = os.fstat(file.fileno())
+                    self.send_header("Content-Length", str(fs.st_size))
+                    self.end_headers()
+                    
+                    # Copy the file to the response
+                    shutil.copyfileobj(file, self.wfile)
+                    
+            except Exception as e:
+                logging.error(f"Error serving file {filename}: {str(e)}")
+                self.send_error(HTTPStatus.INTERNAL_SERVER_ERROR, "Error serving file")
+                
+            return
+
         if self.path == "/isHost":
             if not self.is_authenticated():
                 self.send_response(302)
@@ -284,8 +362,49 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
         elif self.path == "/upload":
             try:
-                content_length = int(self.headers["Content-Length"])
-                body = self.rfile.read(content_length)
+                content_type = self.headers.get('Content-Type', '')
+                if not content_type.startswith('multipart/form-data'):
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {"success": False, "error": "Invalid content type"}
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+
+                # Get content length, use 0 if header is missing
+                try:
+                    content_length = int(self.headers.get("Content-Length", 0))
+                except ValueError:
+                    content_length = 0
+                
+                # Check if content is too large
+                if content_length > MAX_FILE_SIZE:
+                    self.send_response(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {
+                        "success": False, 
+                        "error": f"File too large. Maximum allowed size is {MAX_FILE_SIZE // (1024 * 1024)} MB"
+                    }
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+                
+                # Create a temporary file to store the request data
+                with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+                    temp_path = temp_file.name
+                    
+                    # Read in manageable chunks
+                    bytes_remaining = content_length
+                    chunk_size = 8192  # 8KB chunks
+                    
+                    while bytes_remaining > 0:
+                        chunk_size = min(chunk_size, bytes_remaining)
+                        chunk = self.rfile.read(chunk_size)
+                        if not chunk:
+                            break
+                        temp_file.write(chunk)
+                        bytes_remaining -= len(chunk)
+                
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-type", "application/json; charset=utf-8")
                 session_id = self.create_session()
@@ -298,34 +417,95 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 
                 if not os.path.exists(UPLOAD_DIR):
                     os.makedirs(UPLOAD_DIR)
-
+                
+                # Now process the saved request data
+                with open(temp_path, 'rb') as f:
+                    body = f.read()
+                
+                # Clean up the temporary file
+                os.unlink(temp_path)
+                
                 msg = email.message_from_bytes(
                     b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + body,
                     policy=policy.default
                 )
 
                 uploaded_files = []
+                errors = []
+                
                 for part in msg.iter_parts():
                     if part.get_content_maintype() == "multipart":
                         continue
                     if part.get("Content-Disposition") is None:
                         continue
+                    
                     filename = part.get_filename()
-                    if filename:
+                    if not filename:
+                        continue
+                        
+                    try:
                         decoded_header = email.header.decode_header(filename)
                         filename = "".join(
                             [text.decode(charset or "utf-8") if isinstance(text, bytes) else text
                              for text, charset in decoded_header]
                         )
+                        
+                        # Sanitize filename to prevent directory traversal
                         safe_filename = os.path.basename(filename)
-                        with open(os.path.join(UPLOAD_DIR, safe_filename), "wb") as output_file:
-                            output_file.write(part.get_payload(decode=True))
+                        
+                        # Check for allowed extensions if configured
+                        if ALLOWED_EXTENSIONS and not any(safe_filename.lower().endswith('.' + ext.lower()) for ext in ALLOWED_EXTENSIONS):
+                            errors.append(f"File type not allowed: {safe_filename}")
+                            continue
+                        
+                        # Handle filename conflicts by adding timestamp if file exists
+                        target_path = os.path.join(UPLOAD_DIR, safe_filename)
+                        if os.path.exists(target_path):
+                            name, ext = os.path.splitext(safe_filename)
+                            timestamp = int(time.time())
+                            safe_filename = f"{name}_{timestamp}{ext}"
+                            target_path = os.path.join(UPLOAD_DIR, safe_filename)
+                        
+                        # Get file content and check size
+                        file_content = part.get_payload(decode=True)
+                        if file_content and len(file_content) > MAX_FILE_SIZE:
+                            errors.append(f"File too large: {safe_filename}")
+                            continue
+                            
+                        # Write the file
+                        with open(target_path, "wb") as output_file:
+                            output_file.write(file_content)
+                            
                         uploaded_files.append(safe_filename)
+                        logging.info(f"Successfully uploaded: {safe_filename}")
+                        
+                    except Exception as e:
+                        error_msg = f"Error processing {filename}: {str(e)}"
+                        errors.append(error_msg)
+                        logging.error(error_msg)
 
-                response = {"success": True, "files": uploaded_files}
+                # Check if any files were actually uploaded
+                if not uploaded_files:
+                    error_msg = "No files were uploaded"
+                    if errors:
+                        error_msg += f": {'; '.join(errors)}"
+                    response = {"success": False, "error": error_msg}
+                else:
+                    response = {
+                        "success": True, 
+                        "files": uploaded_files
+                    }
+                    if errors:
+                        response["warnings"] = errors
+                
                 self.wfile.write(json.dumps(response).encode("utf-8"))
+                
             except Exception as e:
-                response = {"success": False, "error": str(e)}
+                logging.exception("Upload error")
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.end_headers()
+                response = {"success": False, "error": f"Upload failed: {str(e)}"}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
                 
         elif self.path == "/changePassword":
@@ -373,4 +553,3 @@ with socketserver.TCPServer(("", PORT), Handler) as httpd:
     print(f"Password protection enabled. Use password: {PASSWORD}")
     print(f"Files will be uploaded to: {UPLOAD_DIR}")
     httpd.serve_forever()
-

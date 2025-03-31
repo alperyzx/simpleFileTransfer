@@ -15,7 +15,9 @@
       display: flex;
       justify-content: center;
       align-items: center;
-      height: 60vh;
+      height: 30vh;
+      margin-top: min(20vh);
+      margin-bottom: min(25vh);
       background-color: #f5f7fa;
       color: #333;
     }
@@ -209,6 +211,8 @@
     const fileList = document.getElementById('file-list');
     let recentFiles = [];
     const MAX_FILES = 10;
+    const MAX_FILE_SIZE = 700 * 1024 * 1024; // 7 00MB
+    const MAX_TOTAL_SIZE = 1000 * 1024 * 1024; // 1GB
 
     const btnClearList = document.getElementById('btn-clear-list');
     const btnChangePassword = document.getElementById('btn-change-password');
@@ -237,35 +241,98 @@
       handleFiles(e.target.files);
     });
     function handleFiles(files) {
+      if (!files || files.length === 0) {
+        status.textContent = "No files selected";
+        return;
+      }
+      
+      let totalSize = 0;
+      let oversizedFiles = [];
+      let validFiles = [];
+      
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        totalSize += file.size;
+        
+        if (file.size > MAX_FILE_SIZE) {
+          oversizedFiles.push(file.name);
+        } else {
+          validFiles.push(file);
+        }
+      }
+      
+      if (oversizedFiles.length > 0) {
+        const sizeInMB = Math.round(MAX_FILE_SIZE / (1024 * 1024));
+        status.textContent = `Files too large (max ${sizeInMB}MB per file): ${oversizedFiles.join(', ')}`;
+        status.classList.add('error-message');
+        return;
+      }
+      
+      if (totalSize > MAX_TOTAL_SIZE) {
+        const totalSizeInMB = Math.round(totalSize / (1024 * 1024));
+        const maxSizeInMB = Math.round(MAX_TOTAL_SIZE / (1024 * 1024));
+        status.textContent = `Total size too large: ${totalSizeInMB}MB (max ${maxSizeInMB}MB)`;
+        status.classList.add('error-message');
+        return;
+      }
+      
       status.textContent = `Selected ${files.length} file(s)`;
-      uploadFiles(files);
+      status.classList.remove('error-message');
+      uploadFiles(validFiles);
     }
     function uploadFiles(files) {
+      if (files.length === 0) return;
+      
       progressContainer.style.visibility = 'visible';
       const formData = new FormData();
+      
       Array.from(files).forEach(file => {
         formData.append('filesToUpload', file);
       });
+      
       const xhr = new XMLHttpRequest();
+      
       xhr.upload.addEventListener('progress', e => {
         if (e.lengthComputable) {
           const percent = Math.round((e.loaded / e.total) * 100);
           progressBar.style.width = `${percent}%`;
+          status.textContent = `Uploading: ${percent}%`;
         }
       });
+      
+      xhr.timeout = 300000;
+      
+      xhr.ontimeout = function() {
+        status.textContent = "Upload timed out. Try smaller files or fewer files at once.";
+        status.classList.add('error-message');
+        progressContainer.style.visibility = 'hidden';
+      };
+      
       xhr.onload = function () {
         if (xhr.status === 200) {
-          const response = JSON.parse(xhr.responseText);
-          if (response.success) {
-            status.textContent = "Files uploaded successfully!";
-            status.classList.remove('error-message');
-            updateFileList(response.files);
-          } else {
-            status.textContent = "Upload failed: " + response.error;
+          try {
+            const response = JSON.parse(xhr.responseText);
+            if (response.success && response.files && response.files.length > 0) {
+              updateFileList(response.files);
+              status.textContent = "Files uploaded successfully!";
+              if (response.warnings) {
+                status.textContent += ` (${response.warnings.length} warnings)`;
+              }
+              status.classList.remove('error-message');
+            } else {
+              let errorMsg = response.error || "No files were uploaded";
+              status.textContent = "Upload failed: " + errorMsg;
+              status.classList.add('error-message');
+            }
+          } catch (e) {
+            status.textContent = "Error parsing server response";
             status.classList.add('error-message');
           }
+        } else if (xhr.status === 413) {
+          status.textContent = "Files too large for server to process";
+          status.classList.add('error-message');
         } else {
-          status.textContent = `Error: ${xhr.statusText}`;
+          status.textContent = `Error: ${xhr.status} ${xhr.statusText}`;
           status.classList.add('error-message');
         }
         setTimeout(() => {
@@ -273,13 +340,28 @@
           progressContainer.style.visibility = 'hidden';
         }, 1000);
       };
+      
       xhr.onerror = () => {
-        status.textContent = "Upload failed";
+        status.textContent = "Upload failed. Check your connection and try again.";
         status.classList.add('error-message');
         progressContainer.style.visibility = 'hidden';
       };
+      
       xhr.open("POST", "/upload");
-      xhr.send(formData);
+      
+      xhr.onabort = function() {
+        status.textContent = "Upload was cancelled";
+        status.classList.add('error-message');
+        progressContainer.style.visibility = 'hidden';
+      };
+      
+      try {
+        xhr.send(formData);
+      } catch (e) {
+        status.textContent = "Error starting upload: " + e.message;
+        status.classList.add('error-message');
+        progressContainer.style.visibility = 'hidden';
+      }
     }
     function updateFileList(files) {
       recentFiles = [...files, ...recentFiles];
@@ -296,7 +378,7 @@
         fileName.textContent = file;
         const downloadLink = document.createElement('a');
         downloadLink.className = 'file-action';
-        downloadLink.href = `/uploaded/${encodeURIComponent(file)}`;
+        downloadLink.href = `/download/${encodeURIComponent(file)}`;
         downloadLink.textContent = 'Download';
         downloadLink.target = '_blank';
         listItem.appendChild(icon);
@@ -318,12 +400,12 @@
     }
     function getFileIcon(fileName) {
       const ext = fileName.split('.').pop().toLowerCase();
-      const imageExt = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'ico'];
+      const imageExt = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'tiff', 'ico','avif'];
       if (imageExt.includes(ext)) return '📷';
-      const docExt = ['doc', 'docx', 'txt', 'rtf', 'odt', 'md', 'pages'];
+      const docExt = ['doc', 'docx', 'txt', 'rtf', 'odt', 'md', 'pages','gpx'];
       if (docExt.includes(ext)) return '📝';
       if (ext === 'pdf') return '📄';
-      const exeExt = ['exe', 'bat', 'sh', 'dll', 'app', 'msi'];
+      const exeExt = ['exe', 'bat', 'sh', 'dll', 'app', 'msi','jar'];
       if (exeExt.includes(ext)) return '⚙️';
       const audioExt = ['mp3', 'wav', 'ogg', 'flac', 'aac', 'wma'];
       if (audioExt.includes(ext)) return '🎵';
@@ -331,11 +413,11 @@
       if (videoExt.includes(ext)) return '🎥';
       const codeExt = ['js', 'py', 'java', 'cpp', 'c', 'html', 'css', 'php', 'ts'];
       if (codeExt.includes(ext)) return '💻';
-      const sheetExt = ['xls', 'xlsx', 'csv', 'ods'];
+      const sheetExt = ['xls', 'xlsx', 'xlsm','csv', 'ods'];
       if (sheetExt.includes(ext)) return '📊';
       const presExt = ['ppt', 'pptx', 'key'];
       if (presExt.includes(ext)) return '📽️';
-      const archiveExt = ['zip', 'rar', '7z', 'tar', 'gz'];
+      const archiveExt = ['zip', 'rar', '7z', 'tar', 'gz','apk'];
       if (archiveExt.includes(ext)) return '📦️';
       return '📁';
     }
@@ -417,7 +499,6 @@
       })
       .catch(err => {
          console.error("Failed to get server IP", err);
-         // Fallback to location.hostname
          const url = `http://${location.hostname}:${location.port}`;
          new QRCode(qrCodeContainer, {
            text: url,
