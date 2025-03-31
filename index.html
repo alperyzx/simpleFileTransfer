@@ -143,6 +143,7 @@
       <h2>Upload Files</h2>
       <div class="action-buttons">
         <button id="btn-clear-list" style="display: none;" title="Clear List">🧹</button>
+        <button id="btn-set-upload-dir" title="Set Upload Directory">📁</button>
         <button id="btn-change-password" title="Change Password">🔑</button>
       </div>
     </div>
@@ -180,6 +181,7 @@
 
     const btnClearList = document.getElementById('btn-clear-list');
     const btnChangePassword = document.getElementById('btn-change-password');
+    const btnSetUploadDir = document.getElementById('btn-set-upload-dir');
 
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
       dropArea.addEventListener(eventName, e => {
@@ -331,6 +333,43 @@
       };
       xhr.send(JSON.stringify({ newPassword }));
     });
+    btnSetUploadDir.addEventListener('click', () => {
+      const newUploadDir = prompt("Enter new upload directory path:");
+      if (!newUploadDir) return;
+      
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/setUploadDir");
+      xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
+      xhr.onload = function () {
+        if (xhr.status === 200) {
+          const response = JSON.parse(xhr.responseText);
+          if (response.success) {
+            alert(response.message);
+          } else {
+            alert("Error: " + response.error);
+          }
+        } else {
+          alert("Failed to set upload directory.");
+        }
+      };
+      xhr.send(JSON.stringify({ uploadDir: newUploadDir }));
+    });
+    fetch('/isHost')
+      .then(res => res.json())
+      .then(data => {
+        if (data.isHost) {
+          btnSetUploadDir.style.display = 'inline-block';
+          btnChangePassword.style.display = 'inline-block';
+        } else {
+          btnSetUploadDir.style.display = 'none';
+          btnChangePassword.style.display = 'none';
+        }
+      })
+      .catch(err => {
+        console.error("Failed to check if host", err);
+        btnSetUploadDir.style.display = 'none';
+        btnChangePassword.style.display = 'none';
+      });
     const qrCodeContainer = document.getElementById('qrcode');
     fetch('/server-ip')
       .then(res => res.json())

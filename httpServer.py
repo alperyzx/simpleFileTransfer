@@ -1,6 +1,4 @@
 # Python
-# In your file `./venv/yz/httpServer.py`, update your authentication methods as follows:
-
 import http.server
 import socketserver
 from http import HTTPStatus
@@ -8,7 +6,6 @@ import os
 import email
 import json
 from email import policy
-#import base64
 import urllib.parse
 import time
 import uuid
@@ -19,6 +16,7 @@ login_attempts = {}  # Format: { client_ip: { "count": int, "lock_until": timest
 PASSWORD = "1234"  # Change this to your preferred password
 SESSION_TIMEOUT = 1800  # Session timeout in seconds (30 minutes)
 sessions = {}  # Format: {session_id: {'created_at': timestamp}}
+UPLOAD_DIR = "uploaded"  # Default upload directory
 
 class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     @staticmethod
@@ -122,7 +120,25 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(login_page.encode("utf-8"))
 
+    def is_host(self):
+        # Check if the client is on the same machine as the server
+        client_ip = self.client_address[0]
+        return client_ip == "127.0.0.1" or client_ip == "::1" or client_ip == self.get_server_ip()
+
     def do_GET(self):
+        if self.path == "/isHost":
+            if not self.is_authenticated():
+                self.send_response(302)
+                self.send_header("Location", "/login")
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
+            is_host = self.is_host()
+            self.wfile.write(json.dumps({"isHost": is_host}).encode("utf-8"))
+            return
+            
         if self.path == "/server-ip":
             if not self.is_authenticated():
                 self.send_response(302)
@@ -157,7 +173,8 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return response
 
     def do_POST(self):
-        global PASSWORD, login_attempts
+        global PASSWORD, login_attempts, UPLOAD_DIR
+        
         if self.path == "/login":
             client_ip = self.client_address[0]
             curr_time = time.time()
@@ -208,7 +225,64 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             self.end_headers()
             return
 
-        if self.path == "/upload":
+        if self.path == "/setUploadDir":
+            try:
+                if not self.is_host():
+                    self.send_response(HTTPStatus.FORBIDDEN)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {"success": False, "error": "Only the host can change the upload directory"}
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+                    
+                content_length = int(self.headers["Content-Length"])
+                body = self.rfile.read(content_length)
+                data = json.loads(body.decode())
+                new_dir = data.get("uploadDir", "")
+                
+                if not new_dir:
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {"success": False, "error": "Upload directory not provided"}
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+                
+                # Create the directory if it doesn't exist
+                if not os.path.exists(new_dir):
+                    try:
+                        os.makedirs(new_dir)
+                    except Exception as e:
+                        self.send_response(HTTPStatus.BAD_REQUEST)
+                        self.send_header("Content-type", "application/json; charset=utf-8")
+                        self.end_headers()
+                        response = {"success": False, "error": f"Could not create directory: {str(e)}"}
+                        self.wfile.write(json.dumps(response).encode("utf-8"))
+                        return
+                        
+                # Check if the directory is writable
+                if not os.access(new_dir, os.W_OK):
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {"success": False, "error": "Directory is not writable"}
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+                    
+                UPLOAD_DIR = new_dir
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.end_headers()
+                response = {"success": True, "message": f"Upload directory changed to {new_dir}"}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+            except Exception as e:
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_header("Content-type", "application/json; charset=utf-8")
+                self.end_headers()
+                response = {"success": False, "error": str(e)}
+                self.wfile.write(json.dumps(response).encode("utf-8"))
+
+        elif self.path == "/upload":
             try:
                 content_length = int(self.headers["Content-Length"])
                 body = self.rfile.read(content_length)
@@ -222,8 +296,8 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 self.send_header("Set-Cookie", cookie.output(header=""))
                 self.end_headers()
 
-                if not os.path.exists("uploaded"):
-                    os.makedirs("uploaded")
+                if not os.path.exists(UPLOAD_DIR):
+                    os.makedirs(UPLOAD_DIR)
 
                 msg = email.message_from_bytes(
                     b"Content-Type: " + self.headers["Content-Type"].encode() + b"\r\n\r\n" + body,
@@ -244,7 +318,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                              for text, charset in decoded_header]
                         )
                         safe_filename = os.path.basename(filename)
-                        with open(os.path.join("uploaded", safe_filename), "wb") as output_file:
+                        with open(os.path.join(UPLOAD_DIR, safe_filename), "wb") as output_file:
                             output_file.write(part.get_payload(decode=True))
                         uploaded_files.append(safe_filename)
 
@@ -253,6 +327,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 response = {"success": False, "error": str(e)}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
+                
         elif self.path == "/changePassword":
             try:
                 content_length = int(self.headers["Content-Length"])
@@ -290,10 +365,12 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
 PORT = 8000
 Handler = HTTPRequestHandler
 
-if not os.path.exists("uploaded"):
-    os.makedirs("uploaded")
+if not os.path.exists(UPLOAD_DIR):
+    os.makedirs(UPLOAD_DIR)
 
 with socketserver.TCPServer(("", PORT), Handler) as httpd:
     print(f"Serving at port {PORT}")
     print(f"Password protection enabled. Use password: {PASSWORD}")
+    print(f"Files will be uploaded to: {UPLOAD_DIR}")
     httpd.serve_forever()
+
