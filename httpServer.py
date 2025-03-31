@@ -8,7 +8,7 @@ import os
 import email
 import json
 from email import policy
-import base64
+#import base64
 import urllib.parse
 import time
 import uuid
@@ -21,7 +21,8 @@ SESSION_TIMEOUT = 1800  # Session timeout in seconds (30 minutes)
 sessions = {}  # Format: {session_id: {'created_at': timestamp}}
 
 class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
-    def get_server_ip(self):
+    @staticmethod
+    def get_server_ip():
         # New implementation to obtain the real outbound IP:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
@@ -48,7 +49,8 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                         del sessions[session_id]
         return False
 
-    def create_session(self):
+    @staticmethod
+    def create_session():
         session_id = str(uuid.uuid4())
         sessions[session_id] = {'created_at': time.time()}
         return session_id
@@ -192,7 +194,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 info["count"] += 1
                 if info["count"] >= 3:
                     # Lock out for 5 minutes (300 seconds)
-                    info["lock_until"] = curr_time + 300
+                    info["lock_until"] = int(curr_time) + 300
                     login_attempts[client_ip] = info
                     self.serve_login_page("Too many attempts. Please try again in 5 minutes.")
                     return
