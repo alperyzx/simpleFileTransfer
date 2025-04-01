@@ -63,7 +63,15 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         session_id = str(uuid.uuid4())
         sessions[session_id] = {'created_at': time.time()}
         return session_id
-        
+
+    def get_current_session_id(self):
+        """Get the current user's session ID from cookie"""
+        if 'Cookie' in self.headers:
+            cookie = http.cookies.SimpleCookie(self.headers['Cookie'])
+            if 'session_id' in cookie:
+                return cookie['session_id'].value
+        return None
+
     def serve_password_setup_page(self, error_message=""):
         server_ip = self.get_server_ip()
         setup_page = f"""
@@ -338,7 +346,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return response
 
     def do_POST(self):
-        global PASSWORD, login_attempts, UPLOAD_DIR
+        global PASSWORD, login_attempts, UPLOAD_DIR, sessions
         
         # Handle initial password setup
         if self.path == "/setup" and PASSWORD is None:
@@ -659,6 +667,20 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     response = {"success": False, "error": "newPassword not provided"}
                     self.wfile.write(json.dumps(response).encode("utf-8"))
                     return
+
+                # Save the current session ID
+                current_session_id = self.get_current_session_id()
+                current_session = None
+                if current_session_id and current_session_id in sessions:
+                    current_session = sessions[current_session_id]
+
+                # Invalidate all sessions by clearing the sessions dictionary
+                sessions.clear()
+
+                # Restore the current session if it existed
+                if current_session and current_session_id:
+                    sessions[current_session_id] = current_session
+
                 PASSWORD = new_password
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-type", "application/json; charset=utf-8")
@@ -669,7 +691,7 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                 cookie["session_id"]["httponly"] = True
                 self.send_header("Set-Cookie", cookie.output(header=""))
                 self.end_headers()
-                response = {"success": True, "message": "Password changed successfully."}
+                response = {"success": True, "message": "Password changed successfully. All other sessions have been invalidated."}
                 self.wfile.write(json.dumps(response).encode("utf-8"))
             except Exception as e:
                 self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
