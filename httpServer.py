@@ -126,8 +126,8 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         </head>
         <body>
             <div class="container">
-                <h2>Welcome to Simple File Transfer</h2>
-                <p class="info">Please set a password for the server (max {MAX_PASSWORD_LENGTH} characters):</p>
+                <h2>Simple File Transfer</h2>
+                <p class="info">Please set a password for the server<br>(max {MAX_PASSWORD_LENGTH} characters)</p>
                 {f'<p class="error">{error_message}</p>' if error_message else ""}
                 <form method="POST" action="/setup">
                     <input type="password" name="password" placeholder="Password" maxlength="{MAX_PASSWORD_LENGTH}" required>
