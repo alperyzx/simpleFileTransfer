@@ -16,7 +16,7 @@ import shutil
 import tempfile
 
 login_attempts = {}  # Format: { client_ip: { "count": int, "lock_until": timestamp (optional) } }
-PASSWORD = "1234"  # Change this to your preferred password
+PASSWORD = None  # Password will be set during first launch
 SESSION_TIMEOUT = 1800  # Session timeout in seconds (30 minutes)
 sessions = {}  # Format: {session_id: {'created_at': timestamp}}
 UPLOAD_DIR = "uploaded"  # Default upload directory
@@ -63,6 +63,81 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         session_id = str(uuid.uuid4())
         sessions[session_id] = {'created_at': time.time()}
         return session_id
+        
+    def serve_password_setup_page(self, error_message=""):
+        server_ip = self.get_server_ip()
+        setup_page = f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Set Password</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body {{
+                    font-family: \\\'Segoe UI\\\', Tahoma, Geneva, Verdana, sans-serif;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 60vh;
+                    background-color: #f5f7fa;
+                }}
+                .container {{
+                    background: white;
+                    padding: 2rem;
+                    border-radius: 12px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+                    width: 300px;
+                    text-align: center;
+                }}
+                input[type=password] {{
+                    width: 80%;
+                    padding: 8px;
+                    margin: 10px 0;
+                    border: 1px solid #ddd;
+                    border-radius: 4px;
+                }}
+                input[type=submit] {{
+                    padding: 8px 16px;
+                    border: none;
+                    border-radius: 4px;
+                    background-color: #4a8cff;
+                    color: white;
+                    cursor: pointer;
+                }}
+                .error {{
+                    color: red;
+                    font-size: 0.9rem;
+                }}
+                .info {{
+                    color: #666;
+                    font-size: 0.85rem;
+                    margin-bottom: 15px;
+                }}
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h2>Welcome to Simple File Transfer</h2>
+                <p class="info">Please set a password for the server:</p>
+                {f'<p class="error">{error_message}</p>' if error_message else ""}
+                <form method="POST" action="/setup">
+                    <input type="password" name="password" placeholder="Password" required>
+                    <br>
+                    <input type="password" name="confirm_password" placeholder="Confirm Password" required>
+                    <br>
+                    <input type="submit" value="Set Password">
+                </form>
+            </div>
+            <script>
+                const serverIp = "{server_ip}";
+            </script>
+        </body>
+        </html>
+        """
+        self.send_response(200)
+        self.send_header("Content-type", "text/html")
+        self.end_headers()
+        self.wfile.write(setup_page.encode("utf-8"))
 
     def serve_login_page(self, error_message=""):
         server_ip = self.get_server_ip()
@@ -137,6 +212,18 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         return client_ip == "127.0.0.1" or client_ip == "::1" or client_ip == self.get_server_ip()
 
     def do_GET(self):
+        global PASSWORD
+        
+        # Handle password setup if no password is set yet
+        if PASSWORD is None:
+            if not self.is_host():
+                self.send_response(200)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"Server is being configured. Please wait for setup to complete.")
+                return
+            return self.serve_password_setup_page()
+            
         if self.path.startswith("/download/"):
             if not self.is_authenticated():
                 self.send_response(302)
@@ -253,7 +340,58 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         global PASSWORD, login_attempts, UPLOAD_DIR
         
+        # Handle initial password setup
+        if self.path == "/setup" and PASSWORD is None:
+            if not self.is_host():
+                self.send_response(403)
+                self.send_header("Content-type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"Only the host can set up the server.")
+                return
+                
+            content_length = int(self.headers["Content-Length"])
+            body = self.rfile.read(content_length)
+            params = urllib.parse.parse_qs(body.decode("utf-8"))
+            
+            new_password = params.get("password", [""])[0]
+            confirm_password = params.get("confirm_password", [""])[0]
+            
+            if not new_password:
+                return self.serve_password_setup_page("Password cannot be empty.")
+                
+            if new_password != confirm_password:
+                return self.serve_password_setup_page("Passwords do not match.")
+                
+            # Set the password
+            PASSWORD = new_password
+            
+            # Redirect to main page after successful setup
+            session_id = self.create_session()
+            cookie = http.cookies.SimpleCookie()
+            cookie["session_id"] = session_id
+            cookie["session_id"]["path"] = "/"
+            cookie["session_id"]["httponly"] = True
+            
+            self.send_response(302)
+            self.send_header("Set-Cookie", cookie.output(header=""))
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
+        
         if self.path == "/login":
+            if PASSWORD is None:
+                if self.is_host():
+                    self.send_response(302)
+                    self.send_header("Location", "/setup")
+                    self.end_headers()
+                    return
+                else:
+                    self.send_response(200)
+                    self.send_header("Content-type", "text/html")
+                    self.end_headers()
+                    self.wfile.write(b"Server is being configured. Please try again later.")
+                    return
+            
             client_ip = self.client_address[0]
             curr_time = time.time()
             # Check if this IP is locked out
@@ -550,6 +688,9 @@ if not os.path.exists(UPLOAD_DIR):
 
 with socketserver.TCPServer(("", PORT), Handler) as httpd:
     print(f"Serving at port {PORT}")
-    print(f"Password protection enabled. Use password: {PASSWORD}")
+    if PASSWORD is None:
+        print(f"No password set. Visit http://127.0.0.1:{PORT} to set up the server.")
+    else:
+        print(f"Password protection enabled. Use the configured password to log in.")
     print(f"Files will be uploaded to: {UPLOAD_DIR}")
     httpd.serve_forever()
