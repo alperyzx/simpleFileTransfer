@@ -11,7 +11,7 @@
       box-sizing: border-box;
     }
     body {
-      font-family: \'Segoe UI\', Tahoma, Geneva, Verdana, sans-serif;
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -211,8 +211,9 @@
     const fileList = document.getElementById('file-list');
     let recentFiles = [];
     const MAX_FILES = 10;
-    const MAX_FILE_SIZE = 700 * 1024 * 1024; // 7 00MB
+    const MAX_FILE_SIZE = 700 * 1024 * 1024; // 700MB
     const MAX_TOTAL_SIZE = 1000 * 1024 * 1024; // 1GB
+    const MAX_PASSWORD_LENGTH = 5; // Maximum password length
 
     const btnClearList = document.getElementById('btn-clear-list');
     const btnChangePassword = document.getElementById('btn-change-password');
@@ -429,6 +430,10 @@
     btnChangePassword.addEventListener('click', () => {
       const newPassword = prompt("Enter new password:");
       if (!newPassword) return;
+      if (newPassword.length > MAX_PASSWORD_LENGTH) {
+        alert(`Password must be at most ${MAX_PASSWORD_LENGTH} characters.`);
+        return;
+      }
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/changePassword");
       xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");

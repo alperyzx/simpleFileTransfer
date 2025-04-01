@@ -22,6 +22,7 @@ sessions = {}  # Format: {session_id: {'created_at': timestamp}}
 UPLOAD_DIR = "uploaded"  # Default upload directory
 MAX_FILE_SIZE = 1024 * 1024 * 700  # 700 MB file size limit
 ALLOWED_EXTENSIONS = None  # Set to a list to restrict file types, None for no restriction
+MAX_PASSWORD_LENGTH = 5  # Maximum password length
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -126,12 +127,12 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
         <body>
             <div class="container">
                 <h2>Welcome to Simple File Transfer</h2>
-                <p class="info">Please set a password for the server:</p>
+                <p class="info">Please set a password for the server (max {MAX_PASSWORD_LENGTH} characters):</p>
                 {f'<p class="error">{error_message}</p>' if error_message else ""}
                 <form method="POST" action="/setup">
-                    <input type="password" name="password" placeholder="Password" required>
+                    <input type="password" name="password" placeholder="Password" maxlength="{MAX_PASSWORD_LENGTH}" required>
                     <br>
-                    <input type="password" name="confirm_password" placeholder="Confirm Password" required>
+                    <input type="password" name="confirm_password" placeholder="Confirm Password" maxlength="{MAX_PASSWORD_LENGTH}" required>
                     <br>
                     <input type="submit" value="Set Password">
                 </form>
@@ -370,6 +371,9 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
             if new_password != confirm_password:
                 return self.serve_password_setup_page("Passwords do not match.")
                 
+            if len(new_password) > MAX_PASSWORD_LENGTH:
+                return self.serve_password_setup_page(f"Password must be at most {MAX_PASSWORD_LENGTH} characters.")
+
             # Set the password
             PASSWORD = new_password
             
@@ -665,6 +669,14 @@ class HTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
                     self.send_header("Content-type", "application/json; charset=utf-8")
                     self.end_headers()
                     response = {"success": False, "error": "newPassword not provided"}
+                    self.wfile.write(json.dumps(response).encode("utf-8"))
+                    return
+
+                if len(new_password) > MAX_PASSWORD_LENGTH:
+                    self.send_response(HTTPStatus.BAD_REQUEST)
+                    self.send_header("Content-type", "application/json; charset=utf-8")
+                    self.end_headers()
+                    response = {"success": False, "error": f"Password must be at most {MAX_PASSWORD_LENGTH} characters"}
                     self.wfile.write(json.dumps(response).encode("utf-8"))
                     return
 
