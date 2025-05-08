@@ -720,10 +720,12 @@ Handler = HTTPRequestHandler
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
 
+server_ip = HTTPRequestHandler.get_server_ip()
+
 with socketserver.TCPServer(("", PORT), Handler) as httpd:
     print(f"Serving at port {PORT}")
     if PASSWORD is None:
-        print(f"No password set. Visit http://127.0.0.1:{PORT} to set up the server.")
+        print(f"No password set. Visit http://{server_ip}:{PORT} to set up the server.")
     else:
         print(f"Password protection enabled. Use the configured password to log in.")
     print(f"Files will be uploaded to: {UPLOAD_DIR}")
