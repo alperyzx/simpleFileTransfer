@@ -2,6 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo Simple File Transfer Server - Starting...
+goto :check_python
 
 REM Function to download and install Python
 :install_python
